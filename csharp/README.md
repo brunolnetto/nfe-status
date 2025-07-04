@@ -112,7 +112,7 @@ CREATE TABLE disponibilidade (
 - Tests are in the `NfeStatusCSharp.Tests` project.
 - To run:
   ```bash
-  dotnet test ../NfeStatusCSharp.Tests
+  dotnet test NfeStatusCSharp.Tests
   ```
 
 ---
