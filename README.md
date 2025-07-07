@@ -32,7 +32,7 @@ A multi-language suite for monitoring and storing the status of Brazilian NFe se
 ### Python
 
 ```bash
-cd nfe-status/python
+cd extraction_jobs/python
 pip install -r requirements.txt
 playwright install
 python3 nfe_status.py
@@ -41,7 +41,7 @@ python3 nfe_status.py
 ### C#
 
 ```bash
-cd nfe-status/csharp/nfe-status-csharp
+cd extraction_jobs/csharp/nfe-status-csharp
 dotnet restore
 dotnet run --project nfe-status-csharp
 ```
