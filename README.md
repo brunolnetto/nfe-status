@@ -7,9 +7,9 @@ A multi-language suite for monitoring and storing the status of Brazilian NFe se
 ## Projects
 
 - **nfe-status/python/**  
-  Python implementation (see [python/README.md](python/README.md) for full details)
+  Python implementation (see [python/README.md](extraction_jobs/python/README.md) for full details)
 - **nfe-status/csharp/nfe-status-csharp/**  
-  C# implementation (see [csharp/README.md](csharp/README.md) for full details)
+  C# implementation (see [csharp/README.md](extraction_jobs/csharp/README.md) for full details)
 
 ---
 
