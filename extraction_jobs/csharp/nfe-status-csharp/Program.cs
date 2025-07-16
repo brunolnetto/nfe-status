@@ -5,7 +5,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Playwright;
 using HtmlAgilityPack;
 using System.Collections.Generic;
-using System.Data.SQLite;
+using Npgsql;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
@@ -52,8 +52,8 @@ namespace NfeStatusCSharp
                 var nfeResult = ParseNfeStatusHtml(html, logger);
                 logger.LogInformation($"Parsed {nfeResult.Statuses.Count} NFE status rows.");
 
-                // Persist to SQLite with SCD2 logic
-                var db = new NfeStatusDatabase(config.DbPath, config.TableName, logger);
+                // Persist to PostgreSQL with SCD2 logic
+                var db = new NfeStatusDatabase(config.PgConnectionString, config.TableName, logger);
                 db.Initialize();
                 db.PersistStatuses(nfeResult);
 
@@ -269,29 +269,29 @@ namespace NfeStatusCSharp
 
     public class NfeStatusDatabase
     {
-        private readonly string _dbPath;
+        private readonly string _connectionString;
         private readonly string _tableName;
         private readonly ILogger _logger;
 
-        public NfeStatusDatabase(string dbPath, string tableName, ILogger logger)
+        public NfeStatusDatabase(string connectionString, string tableName, ILogger logger)
         {
-            _dbPath = dbPath;
+            _connectionString = connectionString;
             _tableName = tableName;
             _logger = logger;
         }
 
         public void Initialize()
         {
-            using var conn = new SQLiteConnection($"Data Source={_dbPath}");
+            using var conn = new NpgsqlConnection(_connectionString);
             conn.Open();
             var cmd = conn.CreateCommand();
             cmd.CommandText = $@"
                 CREATE TABLE IF NOT EXISTS {_tableName} (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id SERIAL PRIMARY KEY,
                     autorizador TEXT,
                     status_json TEXT,
-                    valid_from TEXT,
-                    valid_to TEXT,
+                    valid_from TIMESTAMP,
+                    valid_to TIMESTAMP,
                     is_current INTEGER DEFAULT 1
                 );";
             cmd.ExecuteNonQuery();
@@ -304,7 +304,7 @@ namespace NfeStatusCSharp
                 _logger.LogError("Cannot persist invalid data");
                 return;
             }
-            using var conn = new SQLiteConnection($"Data Source={_dbPath}");
+            using var conn = new NpgsqlConnection(_connectionString);
             conn.Open();
             foreach (var row in result.Statuses)
             {
@@ -312,7 +312,7 @@ namespace NfeStatusCSharp
                 if (string.IsNullOrEmpty(autorizador))
                     continue;
                 var statusJson = System.Text.Json.JsonSerializer.Serialize(row);
-                var now = DateTime.UtcNow.ToString("o");
+                var now = DateTime.UtcNow;
                 // SCD2: Close previous record if status changed
                 var checkCmd = conn.CreateCommand();
                 checkCmd.CommandText = $"SELECT id, status_json FROM {_tableName} WHERE autorizador = @aut AND is_current = 1 ORDER BY valid_from DESC LIMIT 1";
@@ -358,32 +358,19 @@ namespace NfeStatusCSharp
         {
             try
             {
-                using var conn = new SQLiteConnection($"Data Source={_dbPath}");
+                using var conn = new NpgsqlConnection(_connectionString);
                 conn.Open();
                 // Delete records older than maxDays
                 if (maxDays > 0)
                 {
-                    var cutoff = DateTime.UtcNow.AddDays(-maxDays).ToString("o");
+                    var cutoff = DateTime.UtcNow.AddDays(-maxDays);
                     var delCmd = conn.CreateCommand();
                     delCmd.CommandText = $"DELETE FROM {_tableName} WHERE valid_from < @cutoff";
                     delCmd.Parameters.AddWithValue("@cutoff", cutoff);
                     int deleted = delCmd.ExecuteNonQuery();
                     _logger.LogInformation($"Retention: Deleted {deleted} records older than {maxDays} days.");
                 }
-                // Check DB file size and delete oldest records if over maxMb
-                if (maxMb > 0)
-                {
-                    var fileInfo = new FileInfo(_dbPath);
-                    while (fileInfo.Exists && fileInfo.Length > maxMb * 1024 * 1024)
-                    {
-                        var delOldestCmd = conn.CreateCommand();
-                        delOldestCmd.CommandText = $"DELETE FROM {_tableName} WHERE id IN (SELECT id FROM {_tableName} ORDER BY valid_from ASC LIMIT 10)";
-                        int deleted = delOldestCmd.ExecuteNonQuery();
-                        _logger.LogInformation($"Retention: Deleted {deleted} oldest records to reduce DB size.");
-                        fileInfo.Refresh();
-                        if (deleted == 0) break;
-                    }
-                }
+                // DB file size logic removed for PostgreSQL
             }
             catch (Exception ex)
             {
@@ -395,7 +382,7 @@ namespace NfeStatusCSharp
     public class NfeConfig
     {
         public string Url { get; set; } = "https://www.nfe.fazenda.gov.br/portal/disponibilidade.aspx";
-        public string DbPath { get; set; } = "disponibilidade.db";
+        public string PgConnectionString { get; set; } = "Host=localhost;Port=5432;Username=postgres;Password=postgres;Database=nfe";
         public string JsonPath { get; set; } = "disponibilidade.json";
         public string LogLevel { get; set; } = "Information";
         public string LogFile { get; set; } = "nfe_status.log";
@@ -406,10 +393,16 @@ namespace NfeStatusCSharp
 
         public static NfeConfig LoadFromEnvironment()
         {
+            var host = Environment.GetEnvironmentVariable("NFE_PG_HOST") ?? "localhost";
+            var port = Environment.GetEnvironmentVariable("NFE_PG_PORT") ?? "5432";
+            var user = Environment.GetEnvironmentVariable("NFE_PG_USER") ?? "postgres";
+            var password = Environment.GetEnvironmentVariable("NFE_PG_PASSWORD") ?? "postgres";
+            var db = Environment.GetEnvironmentVariable("NFE_PG_DATABASE") ?? "nfe";
+            var connStr = $"Host={host};Port={port};Username={user};Password={password};Database={db}";
             return new NfeConfig
             {
                 Url = Environment.GetEnvironmentVariable("NFE_URL") ?? "https://www.nfe.fazenda.gov.br/portal/disponibilidade.aspx",
-                DbPath = Environment.GetEnvironmentVariable("NFE_DB_PATH") ?? "disponibilidade.db",
+                PgConnectionString = connStr,
                 JsonPath = Environment.GetEnvironmentVariable("NFE_JSON_PATH") ?? "disponibilidade.json",
                 LogLevel = Environment.GetEnvironmentVariable("NFE_LOG_LEVEL") ?? "Information",
                 LogFile = Environment.GetEnvironmentVariable("NFE_LOG_FILE") ?? "nfe_status.log",
