@@ -11,6 +11,7 @@ using System.Text.RegularExpressions;
 using System.Globalization;
 using System.Text;
 using Serilog;
+using System.Data.Common;
 
 namespace NfeStatusCSharp
 {
@@ -314,8 +315,54 @@ namespace NfeStatusCSharp
             _logger = logger;
         }
 
+        public void EnsureDatabaseExists()
+        {
+            try
+            {
+                using var conn = new Npgsql.NpgsqlConnection(_connectionString);
+                conn.Open();
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "3D000") // database does not exist
+            {
+                _logger.LogWarning($"Database does not exist. Attempting to create: {GetDatabaseNameFromConnectionString(_connectionString)}");
+                CreateDatabase();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError($"Failed to connect to database: {ex.Message}");
+                throw;
+            }
+        }
+
+        private void CreateDatabase()
+        {
+            var builder = new Npgsql.NpgsqlConnectionStringBuilder(_connectionString);
+            var dbName = builder.Database;
+            builder.Database = "postgres";
+            using var conn = new Npgsql.NpgsqlConnection(builder.ConnectionString);
+            conn.Open();
+            using var cmd = conn.CreateCommand();
+            cmd.CommandText = $"CREATE DATABASE \"{dbName}\";";
+            try
+            {
+                cmd.ExecuteNonQuery();
+                _logger.LogInformation($"Database '{dbName}' created successfully.");
+            }
+            catch (Npgsql.PostgresException ex) when (ex.SqlState == "42P04") // already exists
+            {
+                _logger.LogWarning($"Database '{dbName}' already exists.");
+            }
+        }
+
+        private static string GetDatabaseNameFromConnectionString(string connStr)
+        {
+            var builder = new Npgsql.NpgsqlConnectionStringBuilder(connStr);
+            return builder.Database;
+        }
+
         public void Initialize()
         {
+            EnsureDatabaseExists();
             using var conn = new NpgsqlConnection(_connectionString);
             conn.Open();
             var cmd = conn.CreateCommand();

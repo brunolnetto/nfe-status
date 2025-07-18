@@ -191,9 +191,10 @@ Você pode agendar a execução automática deste projeto para coletar e salvar 
    ```
 3. Adicione uma linha para executar a cada hora (exemplo):
    ```
-   0 * * * * cd /caminho/para/seu/projeto/extraction_jobs/csharp/nfe-status-csharp && dotnet run appsettings.json >> cron.log 2>&1
+   0 * * * * dotnet run --project /caminho/absoluto/para/nfe-status-csharp appsettings.json
    ```
-   > Altere o caminho conforme necessário. O `>> cron.log 2>&1` salva a saída em um arquivo de log.
+   > Os logs do sistema já serão gravados automaticamente em `nfe_status.log` (e arquivos rotacionados) pelo Serilog. Não é necessário redirecionar a saída para outro arquivo.
+   > Se desejar capturar apenas erros do processo (ex: falha do .NET), use: `2>> erro_cron.log`
 
 ### Windows (usando Agendador de Tarefas)
 
