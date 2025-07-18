@@ -10,8 +10,10 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using System.Text;
-using Serilog;
+using ILogger = Microsoft.Extensions.Logging.ILogger;
 using System.Data.Common;
+using NodaTime;
+using NodaTime.TimeZones;
 
 namespace NfeStatusCSharp
 {
@@ -393,7 +395,8 @@ namespace NfeStatusCSharp
                 if (string.IsNullOrEmpty(autorizador))
                     continue;
                 var statusJson = System.Text.Json.JsonSerializer.Serialize(row);
-                var now = DateTime.UtcNow;
+                var tz = DateTimeZoneProviders.Tzdb["America/Sao_Paulo"];
+                var nowSp = SystemClock.Instance.GetCurrentInstant().InZone(tz).ToDateTimeUtc();
                 // SCD2: Close previous record if status changed
                 var checkCmd = conn.CreateCommand();
                 checkCmd.CommandText = $"SELECT id, status_json FROM {_tableName} WHERE autorizador = @aut AND is_current = 1 ORDER BY valid_from DESC LIMIT 1";
@@ -416,7 +419,7 @@ namespace NfeStatusCSharp
                     {
                         var closeCmd = conn.CreateCommand();
                         closeCmd.CommandText = $"UPDATE {_tableName} SET valid_to = @now, is_current = 0 WHERE id = @id";
-                        closeCmd.Parameters.AddWithValue("@now", now);
+                        closeCmd.Parameters.AddWithValue("@now", nowSp);
                         closeCmd.Parameters.AddWithValue("@id", prevId.Value);
                         closeCmd.ExecuteNonQuery();
                     }
@@ -424,7 +427,7 @@ namespace NfeStatusCSharp
                     insertCmd.CommandText = $@"INSERT INTO {_tableName} (autorizador, status_json, valid_from, valid_to, is_current) VALUES (@aut, @json, @now, NULL, 1)";
                     insertCmd.Parameters.AddWithValue("@aut", autorizador);
                     insertCmd.Parameters.AddWithValue("@json", statusJson);
-                    insertCmd.Parameters.AddWithValue("@now", now);
+                    insertCmd.Parameters.AddWithValue("@now", nowSp);
                     insertCmd.ExecuteNonQuery();
                     _logger.LogInformation($"Inserted new status for {autorizador}");
                 }

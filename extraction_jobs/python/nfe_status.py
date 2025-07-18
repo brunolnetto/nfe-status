@@ -11,17 +11,29 @@ import unicodedata
 
 from playwright.sync_api import sync_playwright, Page, Browser
 from bs4 import BeautifulSoup, Tag
+from logging.handlers import RotatingFileHandler
+import psycopg2
+
+try:
+    from zoneinfo import ZoneInfo  # Python 3.9+
+except ImportError:
+    from pytz import timezone as ZoneInfo
 
 # --- CONFIGURATION ---
 class Config:
-    """Configuration class with environment variable support."""
+    """Configuration class with environment variable support for PostgreSQL."""
     URL = os.getenv("NFE_URL", "https://www.nfe.fazenda.gov.br/portal/disponibilidade.aspx")
-    DB_PATH = os.getenv("NFE_DB_PATH", "disponibilidade.db")
+    PG_HOST = os.getenv("NFE_PG_HOST", "localhost")
+    PG_PORT = os.getenv("NFE_PG_PORT", "5432")
+    PG_USER = os.getenv("NFE_PG_USER", "postgres")
+    PG_PASSWORD = os.getenv("NFE_PG_PASSWORD", "postgres")
+    PG_DATABASE = os.getenv("NFE_PG_DATABASE", "nfe")
+    PG_CONN_STR = f"host={PG_HOST} port={PG_PORT} user={PG_USER} password={PG_PASSWORD} dbname={PG_DATABASE}"
     JSON_PATH = os.getenv("NFE_JSON_PATH", "disponibilidade.json")
     LOG_LEVEL = os.getenv("NFE_LOG_LEVEL", "INFO")
     LOG_FILE = os.getenv("NFE_LOG_FILE", "nfe_status.log")
-    RETENTION_MAX_MB = int(os.getenv("NFE_RETENTION_MAX_MB", 10))  # Max DB size in MB
-    RETENTION_MAX_DAYS = int(os.getenv("NFE_RETENTION_MAX_DAYS", 30))  # Max record age in days
+    RETENTION_MAX_MB = int(os.getenv("NFE_RETENTION_MAX_MB", 10))
+    RETENTION_MAX_DAYS = int(os.getenv("NFE_RETENTION_MAX_DAYS", 30))
     DB_SCHEMA_VERSION = 2
     TABLE_NAME = os.getenv("NFE_TABLE_NAME", "disponibilidade")
     FIELD_AUTORIZADOR = os.getenv("NFE_FIELD_AUTORIZADOR", "autorizador")
@@ -80,16 +92,17 @@ class NFEStatusMonitor:
         self.logger = self.setup_logging()
 
     def setup_logging(self) -> logging.Logger:
-        """Setup logging configuration using environment variable for log level."""
+        """Setup logging configuration using environment variable for log level, with rotação automática de arquivos."""
         log_level = os.getenv("NFE_LOG_LEVEL", "INFO").upper()
         log_level_value = getattr(logging, log_level, logging.INFO)
+        handlers = [
+            RotatingFileHandler(self.config.LOG_FILE, maxBytes=10_000_000, backupCount=7, encoding='utf-8'),
+            logging.StreamHandler()
+        ]
         logging.basicConfig(
             level=log_level_value,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            handlers=[
-                logging.FileHandler(self.config.LOG_FILE, encoding='utf-8'),
-                logging.StreamHandler()
-            ]
+            handlers=handlers
         )
         return logging.getLogger(__name__)
 
@@ -242,11 +255,10 @@ class NFEStatusMonitor:
         attempt = 0
         while attempt < retries:
             try:
-                conn = sqlite3.connect(self.config.DB_PATH, timeout=30)
-                conn.row_factory = sqlite3.Row  # Enable dict-like access
+                conn = psycopg2.connect(self.config.PG_CONN_STR)
                 yield conn
                 break
-            except sqlite3.OperationalError as e:
+            except psycopg2.OperationalError as e:
                 self.logger.error(f"Database connection failed (attempt {attempt+1}): {e}")
                 attempt += 1
                 if attempt >= retries:
@@ -258,30 +270,23 @@ class NFEStatusMonitor:
                     conn.close()
 
     def init_db(self) -> bool:
-        """Initializes SQLite database with SCD2 schema, indices, and schema versioning."""
-        self.logger.info(f"Initializing database at {self.config.DB_PATH}")
+        """Initializes PostgreSQL database with SCD2 schema, indices, and schema versioning."""
+        self.logger.info(f"Initializing database in PostgreSQL: {self.config.PG_DATABASE}")
         try:
             with self.get_db_connection() as conn:
                 cur = conn.cursor()
                 # Always create the table first
                 cur.execute(f"""
                     CREATE TABLE IF NOT EXISTS {self.config.TABLE_NAME} (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        id SERIAL PRIMARY KEY,
                         {self.config.FIELD_AUTORIZADOR} TEXT NOT NULL,
                         {self.config.FIELD_STATUS_JSON} TEXT NOT NULL,
-                        {self.config.FIELD_VALID_FROM} TEXT NOT NULL,
-                        {self.config.FIELD_VALID_TO} TEXT,
+                        {self.config.FIELD_VALID_FROM} TIMESTAMP NOT NULL,
+                        {self.config.FIELD_VALID_TO} TIMESTAMP,
                         {self.config.FIELD_IS_CURRENT} INTEGER NOT NULL DEFAULT 1
                     )
                 """)
-                # Now check schema version and run migration/index logic
-                cur.execute("PRAGMA user_version")
-                version = cur.fetchone()[0]
-                if version < self.config.DB_SCHEMA_VERSION:
-                    self.logger.info(f"Migrating DB schema from version {version} to {self.config.DB_SCHEMA_VERSION}")
-                    if version < 2:
-                        cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{self.config.FIELD_VALID_FROM} ON {self.config.TABLE_NAME}({self.config.FIELD_VALID_FROM})")
-                    cur.execute(f"PRAGMA user_version = {self.config.DB_SCHEMA_VERSION}")
+                # Create indices if not exist
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{self.config.FIELD_AUTORIZADOR} ON {self.config.TABLE_NAME}({self.config.FIELD_AUTORIZADOR})")
                 cur.execute(f"CREATE INDEX IF NOT EXISTS idx_{self.config.FIELD_VALID_FROM} ON {self.config.TABLE_NAME}({self.config.FIELD_VALID_FROM})")
                 conn.commit()
@@ -305,11 +310,10 @@ class NFEStatusMonitor:
         try:
             with self.get_db_connection() as conn:
                 cur = conn.cursor()
-                # Use UTC for all timestamps
                 ts = datetime.fromisoformat(data.checked_at)
                 if ts.tzinfo is None:
                     ts = ts.replace(tzinfo=timezone.utc)
-                ts_str = ts.astimezone(timezone.utc).isoformat()
+                ts_str = ts.astimezone(timezone.utc)
                 success_count = 0
                 for row in data.statuses:
                     autorizador = row.get("autorizador")
@@ -319,7 +323,7 @@ class NFEStatusMonitor:
                     status_json = json.dumps(row, ensure_ascii=False)
                     # Get current record for this autorizador
                     cur.execute(
-                        f"SELECT id, {self.config.FIELD_STATUS_JSON}, {self.config.FIELD_VALID_FROM} FROM {self.config.TABLE_NAME} WHERE {self.config.FIELD_AUTORIZADOR}=? AND {self.config.FIELD_IS_CURRENT}=1 ORDER BY {self.config.FIELD_VALID_FROM} DESC LIMIT 1",
+                        f"SELECT id, {self.config.FIELD_STATUS_JSON}, {self.config.FIELD_VALID_FROM} FROM {self.config.TABLE_NAME} WHERE {self.config.FIELD_AUTORIZADOR}=%s AND {self.config.FIELD_IS_CURRENT}=1 ORDER BY {self.config.FIELD_VALID_FROM} DESC LIMIT 1",
                         (autorizador,)
                     )
                     current = cur.fetchone()
@@ -332,14 +336,14 @@ class NFEStatusMonitor:
                         # Close previous record
                         if current:
                             cur.execute(
-                                f"UPDATE {self.config.TABLE_NAME} SET {self.config.FIELD_VALID_TO}=?, {self.config.FIELD_IS_CURRENT}=0 WHERE id=?",
+                                f"UPDATE {self.config.TABLE_NAME} SET {self.config.FIELD_VALID_TO}=%s, {self.config.FIELD_IS_CURRENT}=0 WHERE id=%s",
                                 (ts_str, current[0])
                             )
                         # Insert new record
                         cur.execute(
                             f"""
                             INSERT INTO {self.config.TABLE_NAME} ({self.config.FIELD_AUTORIZADOR}, {self.config.FIELD_STATUS_JSON}, {self.config.FIELD_VALID_FROM}, {self.config.FIELD_VALID_TO}, {self.config.FIELD_IS_CURRENT})
-                            VALUES (?, ?, ?, NULL, 1)
+                            VALUES (%s, %s, %s, NULL, 1)
                             """,
                             (autorizador, status_json, ts_str)
                         )
@@ -356,39 +360,23 @@ class NFEStatusMonitor:
             return False
 
     def apply_retention_policy(self, conn=None):
-        """Apply retention policy by size and age. If conn is None, open a new connection."""
-        db_path = self.config.DB_PATH
-        max_bytes = self.config.RETENTION_MAX_MB * 1024 * 1024
+        """Apply retention policy by age. If conn is None, open a new connection."""
         max_days = self.config.RETENTION_MAX_DAYS
-        now = datetime.now(timezone.utc)
+        now = datetime.now(ZoneInfo('America/Sao_Paulo'))
         close_conn = False
         try:
             if conn is None:
-                conn = sqlite3.connect(db_path)
+                conn = psycopg2.connect(self.config.PG_CONN_STR)
                 close_conn = True
             cur = conn.cursor()
             # Age-based retention: delete records where valid_to is older than max_days
-            cutoff = (now - timedelta(days=max_days)).isoformat()
+            cutoff = now - timedelta(days=max_days)
             cur.execute(
-                f"DELETE FROM {self.config.TABLE_NAME} WHERE {self.config.FIELD_VALID_TO} IS NOT NULL AND {self.config.FIELD_VALID_TO} < ?",
+                f"DELETE FROM {self.config.TABLE_NAME} WHERE {self.config.FIELD_VALID_TO} IS NOT NULL AND {self.config.FIELD_VALID_TO} < %s",
                 (cutoff,)
             )
             conn.commit()
-            # Size-based retention: if DB file is too large, delete oldest records
-            while os.path.exists(db_path) and os.path.getsize(db_path) > max_bytes:
-                # Find the oldest record with valid_to set (i.e., not current)
-                cur.execute(
-                    f"SELECT id FROM {self.config.TABLE_NAME} WHERE {self.config.FIELD_VALID_TO} IS NOT NULL ORDER BY {self.config.FIELD_VALID_TO} ASC LIMIT 100"
-                )
-                old_ids = [row[0] for row in cur.fetchall()]
-                if not old_ids:
-                    break  # Nothing more to delete
-                cur.executemany(
-                    f"DELETE FROM {self.config.TABLE_NAME} WHERE id=?",
-                    [(oid,) for oid in old_ids]
-                )
-                conn.commit()
-            self.logger.info("Retention policy applied (age: %d days, size: %d MB)", max_days, self.config.RETENTION_MAX_MB)
+            self.logger.info("Retention policy applied (age: %d days)", max_days)
         except Exception as e:
             self.logger.error(f"Failed to apply retention policy: {e}")
         finally:
@@ -412,7 +400,7 @@ class NFEStatusMonitor:
                     normalize_key("statuses"): data.statuses,
                     normalize_key("metadata"): {
                         normalize_key("total_records"): len(data.statuses),
-                        normalize_key("generated_at"): datetime.now(timezone.utc).isoformat(),
+                        normalize_key("generated_at"): datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat(),
                         normalize_key("version"): "2.0"
                     }
                 }, tf, indent=2, ensure_ascii=False)

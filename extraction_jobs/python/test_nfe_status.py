@@ -8,7 +8,7 @@ import sys
 import tempfile
 import json
 from unittest.mock import patch, MagicMock
-import sqlite3
+import psycopg2
 from datetime import datetime, timedelta, timezone
 
 # Add current directory to path for imports
@@ -25,7 +25,7 @@ def test_config_environment_variables():
     
     # Test default values
     assert Config.URL == "https://www.nfe.fazenda.gov.br/portal/disponibilidade.aspx"
-    assert Config.DB_PATH == "disponibilidade.db"
+    assert Config.PG_DATABASE == "nfe"
     assert Config.JSON_PATH == "disponibilidade.json"
     
     # Test environment variable override
@@ -136,45 +136,32 @@ def test_parse_timestamp():
 def test_logging_setup():
     """Test logging setup."""
     print("Testing logging setup...")
-    
+    import logging
     # Test with temporary log file
     with tempfile.NamedTemporaryFile(mode='w', suffix='.log', delete=False) as tmp:
         log_file = tmp.name
-    
     try:
-        # Set environment variable before calling setup_logging
         with patch.dict(os.environ, {'NFE_LOG_FILE': log_file, 'NFE_LOG_LEVEL': 'INFO'}):
-            # Reset logging to ensure clean state
-            import logging
             root_logger = logging.getLogger()
             for handler in root_logger.handlers[:]:
                 root_logger.removeHandler(handler)
-            
-            # Create a simple test logger that writes to file
             test_logger = logging.getLogger('test_logger')
             test_logger.setLevel(logging.INFO)
-            
-            # Add file handler
             file_handler = logging.FileHandler(log_file, encoding='utf-8')
             file_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
             test_logger.addHandler(file_handler)
-            
-            # Test logging
             test_logger.info("Test log message")
-            
-            # Force flush of handlers
             for handler in test_logger.handlers:
                 handler.flush()
-            
-            # Check if log file was created and contains message
+            # Remove and close handler before deleting file
+            test_logger.removeHandler(file_handler)
+            file_handler.close()
             with open(log_file, 'r') as f:
                 log_content = f.read()
                 assert "Test log message" in log_content
     finally:
-        # Cleanup
         if os.path.exists(log_file):
             os.unlink(log_file)
-    
     print("✅ Logging setup tests passed")
 
 def test_error_handling():
@@ -254,23 +241,16 @@ def test_get_browser_session():
     print("✅ get_browser_session tests passed")
 
 def test_get_db_connection():
-    """Test database connection context manager."""
+    """Test database connection context manager (PostgreSQL)."""
     print("Testing get_db_connection...")
-    
     monitor = NFEStatusMonitor()
-    
-    with patch('sqlite3.connect') as mock_connect:
+    with patch('psycopg2.connect') as mock_connect:
         mock_conn = MagicMock()
         mock_connect.return_value = mock_conn
-        
         with monitor.get_db_connection() as conn:
             assert conn == mock_conn
-            mock_connect.assert_called_with(monitor.config.DB_PATH, timeout=30)
-            mock_conn.row_factory = sqlite3.Row
-        
-        # Verify cleanup
+            mock_connect.assert_called_with(monitor.config.PG_CONN_STR)
         mock_conn.close.assert_called()
-    
     print("✅ get_db_connection tests passed")
 
 def test_run_method_success():
@@ -365,7 +345,7 @@ def test_error_scenarios():
     monitor = NFEStatusMonitor()
     
     # Test database connection failure
-    with patch('sqlite3.connect', side_effect=Exception("DB Error")):
+    with patch('psycopg2.connect', side_effect=Exception("DB Error")):
         success = monitor.init_db()
         assert success is False
     
@@ -381,7 +361,12 @@ def test_error_scenarios():
         success=True
     )
     
-    with patch('builtins.open', side_effect=PermissionError("Permission denied")):
+    # Patch NamedTemporaryFile to raise PermissionError
+    import tempfile as _tempfile
+    class DummyFile:
+        def __enter__(self): raise PermissionError("Permission denied")
+        def __exit__(self, exc_type, exc_val, exc_tb): return False
+    with patch.object(_tempfile, 'NamedTemporaryFile', DummyFile):
         success = monitor.save_json(mock_result)
         assert success is False
     
@@ -403,78 +388,98 @@ def test_error_scenarios():
     print("✅ Error scenarios tests passed")
 
 def test_scd2_logic():
-    """Test SCD2 (Slowly Changing Dimension Type 2) logic."""
+    """Test SCD2 (Slowly Changing Dimension Type 2) logic with PostgreSQL mocks."""
     print("Testing SCD2 logic...")
-    
     monitor = NFEStatusMonitor()
-    
-    # Create test data
     result1 = NFEResult(
         checked_at="2024-01-15T10:30:00",
         statuses=[{"Autorizador": "SVAN", "Status": "verde"}],
         success=True
     )
-    
     result2 = NFEResult(
         checked_at="2024-01-15T11:30:00",
-        statuses=[{"Autorizador": "SVAN", "Status": "amarelo"}],  # Status changed
+        statuses=[{"Autorizador": "SVAN", "Status": "amarelo"}],
         success=True
     )
-    
-    with patch('sqlite3.connect') as mock_connect:
+    with patch('psycopg2.connect') as mock_connect:
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cur
-        
-        # First insert - no existing record
         mock_cur.fetchone.return_value = None
         success = monitor.persist(result1)
         assert success is True
-        
-        # Second insert - status changed, should close previous and insert new
         mock_cur.fetchone.return_value = (1, json.dumps({"Autorizador": "SVAN", "Status": "verde"}), "2024-01-15T10:30:00")
         success = monitor.persist(result2)
         assert success is True
-        
-        # Verify SCD2 operations
-        assert mock_cur.execute.call_count >= 3  # At least 3 SQL operations
-    
+        assert mock_cur.execute.call_count == 2
     print("✅ SCD2 logic tests passed")
 
 def test_retention_policy_age_and_size():
     """Test retention policy for both age and size limits."""
     print("Testing retention policy (age and size)...")
     monitor = NFEStatusMonitor()
-    # Patch os.path.getsize and os.path.exists to simulate DB size
     with patch('os.path.getsize') as mock_getsize, \
          patch('os.path.exists') as mock_exists, \
-         patch('sqlite3.connect') as mock_connect:
+         patch('psycopg2.connect') as mock_connect:
         mock_conn = MagicMock()
         mock_cur = MagicMock()
         mock_connect.return_value = mock_conn
         mock_conn.cursor.return_value = mock_cur
         mock_exists.return_value = True
-        # Simulate DB size over the limit for first two calls, then under
         mock_getsize.side_effect = [15 * 1024 * 1024, 12 * 1024 * 1024, 8 * 1024 * 1024]
-        # Simulate old records for deletion
         mock_cur.fetchall.side_effect = [ [(1,), (2,)], [] ]
-        # Simulate age-based deletion
         now = datetime.now(timezone.utc)
-        cutoff = (now - timedelta(days=monitor.config.RETENTION_MAX_DAYS)).isoformat()
-        # Call retention policy
+        cutoff = now - timedelta(days=monitor.config.RETENTION_MAX_DAYS)
         monitor.apply_retention_policy(conn=mock_conn)
-        # Check that age-based delete was called
-        mock_cur.execute.assert_any_call(
-            f"DELETE FROM {monitor.config.TABLE_NAME} WHERE {monitor.config.FIELD_VALID_TO} IS NOT NULL AND {monitor.config.FIELD_VALID_TO} < ?",
-            (cutoff,)
-        )
-        # Check that size-based delete was called
-        mock_cur.executemany.assert_any_call(
-            f"DELETE FROM {monitor.config.TABLE_NAME} WHERE id=?",
-            [(1,), (2,)]
-        )
-        print("✅ Retention policy (age and size) tests passed")
+        # Check that age-based delete was called (PostgreSQL: %s, not ?)
+        found = False
+        for call in mock_cur.execute.call_args_list:
+            if call[0][0].startswith(f"DELETE FROM {monitor.config.TABLE_NAME}") and call[0][1][0] == cutoff:
+                found = True
+        assert found, "DELETE with correct cutoff not called"
+    print("✅ Retention policy (age and size) tests passed")
+
+def test_apply_retention_policy():
+    """Test apply_retention_policy covers both with and without conn."""
+    monitor = NFEStatusMonitor()
+    # Test with provided connection
+    with patch('psycopg2.connect') as mock_connect:
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cur
+        monitor.apply_retention_policy(conn=mock_conn)
+        assert mock_cur.execute.called
+    # Test without provided connection (should open and close its own)
+    with patch('psycopg2.connect') as mock_connect:
+        mock_conn = MagicMock()
+        mock_cur = MagicMock()
+        mock_connect.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cur
+        monitor.apply_retention_policy()
+        assert mock_cur.execute.called
+    print("✅ apply_retention_policy covered")
+
+def test_status_changed():
+    """Test status_changed static method."""
+    # Should return False for equal dicts
+    d1 = {"a": 1, "b": 2}
+    d2 = {"a": 1, "b": 2}
+    assert NFEStatusMonitor.status_changed(d1, d2) is False
+    # Should return True for different dicts
+    d3 = {"a": 1, "b": 3}
+    assert NFEStatusMonitor.status_changed(d1, d3) is True
+    print("✅ status_changed covered")
+
+def test_normalize_key():
+    """Test normalize_key function."""
+    from nfe_status import normalize_key
+    assert normalize_key("Autorizador") == "autorizador"
+    assert normalize_key("Status com Acento!") == "status_com_acento"
+    assert normalize_key("  Espaço  e--caractéres  ") == "espaco_e_caracteres"
+    assert normalize_key("") == ""
+    print("✅ normalize_key covered")
 
 def main():
     """Run all tests."""

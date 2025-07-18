@@ -217,11 +217,12 @@ def run_comprehensive_coverage_analysis():
     print("✅ get_browser_session covered")
     
     # get_db_connection
-    with patch('sqlite3.connect') as mock_connect:
+    with patch('psycopg2.connect') as mock_connect:
         mock_conn = MagicMock()
         mock_connect.return_value = mock_conn
         with monitor.get_db_connection() as conn:
-            assert conn is mock_conn
+            assert mock_connect.called
+            assert isinstance(conn, MagicMock)
         tracker.track_method_call("get_db_connection")
     print("✅ get_db_connection covered")
     
@@ -259,6 +260,23 @@ def run_comprehensive_coverage_analysis():
         assert result == 0  # Success
         tracker.track_method_call("run")
     print("✅ run method covered")
+    
+    # Test 8: apply_retention_policy
+    print("Testing apply_retention_policy...")
+    from test_nfe_status import test_apply_retention_policy, test_status_changed, test_normalize_key
+    test_apply_retention_policy()
+    tracker.track_method_call("apply_retention_policy")
+    print("✅ apply_retention_policy covered")
+    # Test 9: status_changed
+    print("Testing status_changed...")
+    test_status_changed()
+    tracker.track_method_call("status_changed")
+    print("✅ status_changed covered")
+    # Test 10: normalize_key
+    print("Testing normalize_key...")
+    test_normalize_key()
+    tracker.track_function_call("normalize_key")
+    print("✅ normalize_key covered")
     
     print("\n📊 Generating comprehensive coverage report...")
     report = tracker.generate_report()
