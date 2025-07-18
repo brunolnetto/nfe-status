@@ -10,7 +10,7 @@ public class NfeStatusTests
         var config = NfeConfig.LoadFromEnvironment();
         Assert.NotNull(config);
         Assert.Equal("https://www.nfe.fazenda.gov.br/portal/disponibilidade.aspx", config.Url);
-        Assert.Equal("disponibilidade.db", config.DbPath);
+        Assert.Contains("Host=", config.PgConnectionString);
     }
 
     [Fact]

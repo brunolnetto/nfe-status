@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
 using System.Text;
+using Serilog;
 
 namespace NfeStatusCSharp
 {
@@ -46,11 +47,22 @@ namespace NfeStatusCSharp
                 config = NfeConfig.LoadFromEnvironment();
             }
 
-            // Set up logging
-            using var loggerFactory = LoggerFactory.Create(builder =>
+            // Configurar Serilog para rotação de logs
+            Log.Logger = new LoggerConfiguration()
+                .MinimumLevel.Information()
+                .WriteTo.File(
+                    config.LogFile,
+                    rollingInterval: RollingInterval.Day,
+                    fileSizeLimitBytes: 10_000_000, // 10 MB
+                    rollOnFileSizeLimit: true,
+                    retainedFileCountLimit: 7,
+                    shared: true
+                )
+                .CreateLogger();
+
+            var loggerFactory = LoggerFactory.Create(builder =>
             {
-                builder.AddConsole();
-                builder.SetMinimumLevel(LogLevel.Information);
+                builder.AddSerilog();
             });
             var logger = loggerFactory.CreateLogger<Program>();
 
@@ -86,6 +98,10 @@ namespace NfeStatusCSharp
             catch (Exception ex)
             {
                 logger.LogError($"Fatal error in NFE status monitor: {ex.Message}");
+            }
+            finally
+            {
+                Log.CloseAndFlush();
             }
         }
 

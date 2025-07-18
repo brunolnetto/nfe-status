@@ -1,91 +1,119 @@
-# NFe Status Monitor (C#)
+# NFE Status CSharp
 
-A C# implementation for monitoring and storing the status of Brazilian NFe services. It scrapes the official portal, persists historical data in SQLite (with SCD2), exports to JSON, and applies automatic retention policies.
-
----
-
-## ✨ Features
-
-- Automated scraping of NFe service status using Playwright for .NET.
-- Historical persistence (SCD2) in SQLite.
-- Atomic JSON export (safe against corruption).
-- Automatic retention policy by age (days) and database size (MB).
-- Flexible configuration via environment variables.
-- Schema version control and automatic migration.
-- UTC timestamps for consistency.
-- Detailed, configurable logging.
-- Automated tests with xUnit.
+Uma implementação em C# para monitorar e armazenar o status dos serviços da NFe brasileira. Realiza scraping do portal oficial, persiste o histórico em banco de dados PostgreSQL (SCD2), exporta para JSON e aplica políticas automáticas de retenção.
 
 ---
 
-## 🚀 How to Use
+## ✨ Funcionalidades
 
-1. **Install .NET 8 SDK**  
-   [Download and install .NET 8](https://dotnet.microsoft.com/en-us/download/dotnet/8.0)
+- Coleta automática do status dos serviços NFe usando Playwright para .NET.
+- Persistência histórica (SCD2) em PostgreSQL.
+- Exportação atômica para JSON (seguro contra corrupção).
+- Política de retenção automática por idade (dias).
+- Configuração flexível via variáveis de ambiente ou arquivo JSON.
+- Controle de versão do schema e migração automática.
+- Timestamps em UTC para consistência.
+- Log detalhado e configurável.
+- Testes automatizados com xUnit.
 
-2. **Install dependencies:**  
-   In the project directory:
+---
+
+## 🚀 Como Usar
+
+1. **Instale o .NET 8 SDK**  
+   [Baixe e instale o .NET 8](https://dotnet.microsoft.com/pt-br/download/dotnet/8.0)
+
+2. **Instale as dependências:**  
+   No diretório do projeto:
    ```bash
    dotnet restore
    ```
 
-3. **Configure environment variables** (optional, see below).
+3. **Configure as variáveis de ambiente** (opcional, veja abaixo).
 
-4. **Run manually:**
+4. **Execute manualmente:**
    ```bash
    dotnet run --project nfe-status-csharp
    ```
 
-5. **Or schedule via cron (example every 15 minutes):**
+5. **Ou agende via cron (exemplo a cada 15 minutos):**
    ```
-   */15 * * * * NFE_DB_PATH=/absolute/path/disponibilidade.db NFE_JSON_PATH=/absolute/path/disponibilidade.json NFE_LOG_FILE=/absolute/path/nfe_status.log dotnet run --project /absolute/path/to/nfe-status-csharp
+   */15 * * * * dotnet run --project /caminho/absoluto/para/nfe-status-csharp appsettings.json >> cron.log 2>&1
    ```
 
 ---
 
-## ⚙️ Configuration
+## ⚙️ Configuração
 
-All options can be set via environment variables:
+Todas as opções podem ser definidas por variáveis de ambiente **ou** por um arquivo JSON (`appsettings.json`).
 
-| Variable                | Default                   | Description                                 |
-|-------------------------|---------------------------|---------------------------------------------|
-| `NFE_URL`               | Official NFe URL          | Status page URL                             |
-| `NFE_DB_PATH`           | `disponibilidade.db`      | SQLite database path                        |
-| `NFE_JSON_PATH`         | `disponibilidade.json`    | Output JSON file path                       |
-| `NFE_LOG_LEVEL`         | `Information`             | Log level (Debug, Information, Warning, Error)|
-| `NFE_LOG_FILE`          | `nfe_status.log`          | Log file path                               |
-| `NFE_RETENTION_MAX_MB`  | `10`                      | Max DB size (MB) before deleting old records|
-| `NFE_RETENTION_MAX_DAYS`| `30`                      | Max record age (days)                       |
-| `NFE_TABLE_NAME`        | `disponibilidade`         | Main table name                             |
+| Variável                  | Padrão                        | Descrição                                      |
+|--------------------------|-------------------------------|------------------------------------------------|
+| `NFE_URL`                | URL oficial da NFe            | URL da página de status                        |
+| `NFE_PG_HOST`            | `localhost`                   | Host do PostgreSQL                             |
+| `NFE_PG_PORT`            | `5432`                        | Porta do PostgreSQL                            |
+| `NFE_PG_USER`            | `postgres`                    | Usuário do PostgreSQL                          |
+| `NFE_PG_PASSWORD`        | `postgres`                    | Senha do PostgreSQL                            |
+| `NFE_PG_DATABASE`        | `nfe`                         | Nome do banco de dados                         |
+| `NFE_JSON_PATH`          | `disponibilidade.json`        | Caminho do arquivo JSON de saída               |
+| `NFE_LOG_LEVEL`          | `Information`                 | Nível de log (Debug, Information, Warning, Error)|
+| `NFE_LOG_FILE`           | `nfe_status.log`              | Caminho do arquivo de log                      |
+| `NFE_RETENTION_MAX_DAYS` | `30`                          | Idade máxima dos registros (dias)              |
+| `NFE_TABLE_NAME`         | `disponibilidade`             | Nome da tabela principal                       |
+
+### Usando um arquivo de configuração JSON
+
+Crie um arquivo chamado `appsettings.json` no diretório do projeto com conteúdo como:
+
+```json
+{
+  "PgConnectionString": "Host=customhost;Port=5432;Username=meuusuario;Password=minhasenha;Database=meubanco",
+  "Url": "https://www.nfe.fazenda.gov.br/portal/disponibilidade.aspx",
+  "JsonPath": "disponibilidade.json",
+  "LogLevel": "Information",
+  "LogFile": "nfe_status.log",
+  "RetentionMaxMb": 10,
+  "RetentionMaxDays": 30,
+  "DbSchemaVersion": 2,
+  "TableName": "disponibilidade"
+}
+```
+
+Execute o projeto com:
+
+```
+dotnet run appsettings.json
+```
+
+Qualquer variável de ambiente definida irá sobrescrever o valor do arquivo JSON.
 
 ---
 
-## 🗄️ Database Schema
+## 🗄️ Esquema do Banco de Dados (PostgreSQL)
 
 ```sql
 CREATE TABLE disponibilidade (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    autorizador TEXT NOT NULL,
-    status_json TEXT NOT NULL,
-    valid_from TEXT NOT NULL, -- UTC ISO8601
-    valid_to TEXT,
-    is_current INTEGER NOT NULL DEFAULT 1
+    id SERIAL PRIMARY KEY,
+    autorizador TEXT,
+    status_json TEXT,
+    valid_from TIMESTAMP,
+    valid_to TIMESTAMP,
+    is_current INTEGER DEFAULT 1
 );
 ```
 
 ---
 
-## 🕒 Retention Policy
+## 🕒 Política de Retenção
 
-- **By age:** Records with `valid_to` older than `NFE_RETENTION_MAX_DAYS` are removed.
-- **By size:** If the DB file exceeds `NFE_RETENTION_MAX_MB`, old records are deleted until under the limit.
+- **Por idade:** Registros com `valid_from` mais antigos que `NFE_RETENTION_MAX_DAYS` são removidos.
 
 ---
 
-## 📤 JSON Output
+## 📤 Saída JSON
 
-- The JSON file is written atomically (temp file + rename).
-- Example output:
+- O arquivo JSON é escrito de forma atômica (arquivo temporário + rename).
+- Exemplo de saída:
   ```json
   {
     "checked_at": "2024-01-15T10:30:00Z",
@@ -107,40 +135,106 @@ CREATE TABLE disponibilidade (
 
 ---
 
-## 🧪 Tests
+## 🧪 Testes
 
-- Tests are in the `NfeStatusCSharp.Tests` project.
-- To run:
+- Os testes estão no projeto `NfeStatusCSharp.Tests`.
+- Para rodar:
   ```bash
   dotnet test NfeStatusCSharp.Tests
   ```
 
 ---
 
-## 📦 Dependencies
+## 📦 Dependências
 
 - Microsoft.Playwright
 - HtmlAgilityPack
-- System.Data.SQLite
 - System.Text.Json
 - Microsoft.Extensions.Logging
+- Npgsql
 - xUnit
+- Serilog
 
 ---
 
-## 📄 License
+## 📄 Licença
 
-MIT. See LICENSE file.
-
----
-
-## 🤝 Contributing
-
-1. Fork the repo
-2. Create a feature branch
-3. Implement and test
-4. Submit a Pull Request
+MIT. Veja o arquivo LICENSE.
 
 ---
 
-Questions or suggestions? Open an issue!
+## 🤝 Contribuindo
+
+1. Faça um fork do repositório
+2. Crie um branch para sua feature
+3. Implemente e teste
+4. Envie um Pull Request
+
+---
+
+Dúvidas ou sugestões? Abra uma issue!
+
+## Agendamento Automático (Cron Job)
+
+Você pode agendar a execução automática deste projeto para coletar e salvar o status da NFE periodicamente. Veja como configurar em diferentes sistemas operacionais:
+
+### Linux (usando cron)
+
+1. Gere o comando para rodar o projeto, por exemplo:
+   ```sh
+   cd /caminho/para/seu/projeto/extraction_jobs/csharp/nfe-status-csharp
+   dotnet run appsettings.json
+   ```
+2. Edite o crontab:
+   ```sh
+   crontab -e
+   ```
+3. Adicione uma linha para executar a cada hora (exemplo):
+   ```
+   0 * * * * cd /caminho/para/seu/projeto/extraction_jobs/csharp/nfe-status-csharp && dotnet run appsettings.json >> cron.log 2>&1
+   ```
+   > Altere o caminho conforme necessário. O `>> cron.log 2>&1` salva a saída em um arquivo de log.
+
+### Windows (usando Agendador de Tarefas)
+
+1. Abra o "Agendador de Tarefas" (Task Scheduler).
+2. Crie uma nova tarefa básica.
+3. Defina a frequência desejada (ex: diária, a cada hora, etc).
+4. Na ação, escolha "Iniciar um programa" e configure:
+   - **Programa/script:** `dotnet`
+   - **Argumentos:** `run appsettings.json`
+   - **Iniciar em:** `C:\Users\SeuUsuario\github\nfe-status\extraction_jobs\csharp\nfe-status-csharp`
+5. Salve e ative a tarefa.
+
+> Certifique-se de que o .NET SDK está instalado e disponível no PATH do sistema.
+
+### Observações
+- Sempre teste manualmente o comando antes de agendar.
+- Use variáveis de ambiente ou o arquivo `appsettings.json` para configurar a conexão e outros parâmetros.
+- Consulte os logs para verificar se a execução automática está funcionando corretamente.
+
+## 📝 Logs e Rotação Automática
+
+O projeto utiliza [Serilog](https://serilog.net/) para logging estruturado e rotação automática de arquivos de log.
+
+- O log é gravado no arquivo definido por `LogFile` (padrão: `nfe_status.log`).
+- A rotação ocorre diariamente **ou** ao atingir 10 MB por arquivo.
+- Até 7 arquivos antigos de log são mantidos automaticamente.
+- O comportamento pode ser customizado alterando os parâmetros em `Program.cs` ou via configuração.
+
+**Exemplo de configuração padrão:**
+```csharp
+Log.Logger = new LoggerConfiguration()
+    .MinimumLevel.Information()
+    .WriteTo.File(
+        config.LogFile,
+        rollingInterval: RollingInterval.Day,
+        fileSizeLimitBytes: 10_000_000, // 10 MB
+        rollOnFileSizeLimit: true,
+        retainedFileCountLimit: 7,
+        shared: true
+    )
+    .CreateLogger();
+```
+
+> Os logs são essenciais para auditoria e troubleshooting. Consulte os arquivos rotacionados para histórico.
