@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 from contextlib import contextmanager
 import unicodedata
+from dotenv import load_dotenv
 
 from playwright.sync_api import sync_playwright, Page, Browser
 from bs4 import BeautifulSoup, Tag
@@ -18,6 +19,8 @@ try:
     from zoneinfo import ZoneInfo  # Python 3.9+
 except ImportError:
     from pytz import timezone as ZoneInfo
+
+load_dotenv()
 
 # --- CONFIGURATION ---
 class Config:
