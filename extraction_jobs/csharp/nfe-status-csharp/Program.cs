@@ -25,8 +25,26 @@ namespace NfeStatusCSharp
     {
         static async Task Main(string[] args)
         {
-            // Load configuration from environment variables
-            var config = NfeConfig.LoadFromEnvironment();
+            NfeConfig config;
+            if (args.Length > 0 && File.Exists(args[0]))
+            {
+                config = NfeConfig.LoadFromFile(args[0]);
+                // Override with env vars if set
+                var envConfig = NfeConfig.LoadFromEnvironment();
+                if (!string.IsNullOrEmpty(envConfig.PgConnectionString)) config.PgConnectionString = envConfig.PgConnectionString;
+                if (!string.IsNullOrEmpty(envConfig.Url)) config.Url = envConfig.Url;
+                if (!string.IsNullOrEmpty(envConfig.JsonPath)) config.JsonPath = envConfig.JsonPath;
+                if (!string.IsNullOrEmpty(envConfig.LogLevel)) config.LogLevel = envConfig.LogLevel;
+                if (!string.IsNullOrEmpty(envConfig.LogFile)) config.LogFile = envConfig.LogFile;
+                if (envConfig.RetentionMaxMb != 10) config.RetentionMaxMb = envConfig.RetentionMaxMb;
+                if (envConfig.RetentionMaxDays != 30) config.RetentionMaxDays = envConfig.RetentionMaxDays;
+                if (envConfig.DbSchemaVersion != 2) config.DbSchemaVersion = envConfig.DbSchemaVersion;
+                if (!string.IsNullOrEmpty(envConfig.TableName)) config.TableName = envConfig.TableName;
+            }
+            else
+            {
+                config = NfeConfig.LoadFromEnvironment();
+            }
 
             // Set up logging
             using var loggerFactory = LoggerFactory.Create(builder =>
@@ -411,6 +429,14 @@ namespace NfeStatusCSharp
                 DbSchemaVersion = int.TryParse(Environment.GetEnvironmentVariable("NFE_DB_SCHEMA_VERSION"), out var ver) ? ver : 2,
                 TableName = Environment.GetEnvironmentVariable("NFE_TABLE_NAME") ?? "disponibilidade"
             };
+        }
+
+        public static NfeConfig LoadFromFile(string filePath)
+        {
+            if (!File.Exists(filePath))
+                throw new FileNotFoundException($"Config file not found: {filePath}");
+            var json = File.ReadAllText(filePath);
+            return JsonSerializer.Deserialize<NfeConfig>(json) ?? new NfeConfig();
         }
     }
 }
