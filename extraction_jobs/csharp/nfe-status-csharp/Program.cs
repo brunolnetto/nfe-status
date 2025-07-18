@@ -6,6 +6,7 @@ using Microsoft.Playwright;
 using HtmlAgilityPack;
 using System.Collections.Generic;
 using Npgsql;
+using Serilog;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Globalization;
