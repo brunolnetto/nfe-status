@@ -65,6 +65,9 @@ AUTORIZADOR_INFO = {
 # Pre-compile regex for timestamp
 TS_RE = re.compile(r"Última Verificação:\s*(\d{2}/\d{2}/\d{4} \d{2}:\d{2}:\d{2})")
 
+# Timezone configurável
+NFE_TIMEZONE = os.getenv("NFE_TIMEZONE", "America/Sao_Paulo")
+
 @dataclass
 class NFEResult:
     """Data class for NFE status results."""
@@ -362,7 +365,7 @@ class NFEStatusMonitor:
     def apply_retention_policy(self, conn=None):
         """Apply retention policy by age. If conn is None, open a new connection."""
         max_days = self.config.RETENTION_MAX_DAYS
-        now = datetime.now(ZoneInfo('America/Sao_Paulo'))
+        now = datetime.now(ZoneInfo(NFE_TIMEZONE))
         close_conn = False
         try:
             if conn is None:
@@ -400,7 +403,7 @@ class NFEStatusMonitor:
                     normalize_key("statuses"): data.statuses,
                     normalize_key("metadata"): {
                         normalize_key("total_records"): len(data.statuses),
-                        normalize_key("generated_at"): datetime.now(ZoneInfo('America/Sao_Paulo')).isoformat(),
+                        normalize_key("generated_at"): datetime.now(ZoneInfo(NFE_TIMEZONE)).isoformat(),
                         normalize_key("version"): "2.0"
                     }
                 }, tf, indent=2, ensure_ascii=False)

@@ -396,7 +396,8 @@ namespace NfeStatusCSharp
                 if (string.IsNullOrEmpty(autorizador))
                     continue;
                 var statusJson = System.Text.Json.JsonSerializer.Serialize(row);
-                var tz = DateTimeZoneProviders.Tzdb["America/Sao_Paulo"];
+                var timezoneId = Environment.GetEnvironmentVariable("NFE_TIMEZONE") ?? "America/Sao_Paulo";
+                var tz = DateTimeZoneProviders.Tzdb[timezoneId];
                 var nowSp = SystemClock.Instance.GetCurrentInstant().InZone(tz).ToDateTimeUtc();
                 // SCD2: Close previous record if status changed
                 var checkCmd = conn.CreateCommand();
