@@ -1,3 +1,5 @@
+CREATE OR REPLACE VIEW vw_nfe_daily_sla AS
+
 WITH
   -- 1) Build the timeline per day: start‑of‑day event + each status_servico4 transition
   timeline AS (
@@ -5,9 +7,9 @@ WITH
     SELECT
       autorizador,
       dia,
-      DATETIME(started_at)            AS ts,
-      JSON_EXTRACT(initial, '$.status_servico4') AS status
-    FROM daily_status
+      started_at::timestamp            AS ts,
+      initial::jsonb ->> 'status_servico4' AS status
+    FROM vw_nfe_daily_status
 
     UNION ALL
 
@@ -15,13 +17,13 @@ WITH
     SELECT
       autorizador,
       dia,
-      -- strip the trailing Z and convert to DATETIME
-      DATETIME(
-        REPLACE(REPLACE(JSON_EXTRACT(value, '$.when'), 'T', ' '), 'Z','')
-      )                               AS ts,
-      JSON_EXTRACT(value, '$.to')     AS status
-    FROM daily_status,
-         JSON_EACH(transitions, '$.status_servico4')
+      -- strip the trailing Z and convert to timestamp
+      to_timestamp(
+        regexp_replace((value->>'when'), 'T', ' '), 'YYYY-MM-DD HH24:MI:SS'
+      ) AS ts,
+      value->>'to' AS status
+    FROM vw_nfe_daily_status,
+         LATERAL jsonb_array_elements(transitions::jsonb -> 'status_servico4') AS value
   ),
 
   -- 2) Order and peek at next timestamp (per day)
@@ -45,10 +47,9 @@ WITH
       autorizador,
       dia,
       status,
-      (JULIANDAY(
-         COALESCE(next_ts, DATETIME(dia || ' 23:59:59'))
-       ) - JULIANDAY(ts)
-      ) * 24 * 60 AS minutes
+      (EXTRACT(EPOCH FROM (
+         COALESCE(next_ts, (dia::timestamp + INTERVAL '23:59:59')) - ts
+      )) / 60.0) AS minutes
     FROM ordered
   )
 
@@ -60,7 +61,7 @@ SELECT
   ROUND(SUM(minutes), 2)                                  AS minutos_total,
   ROUND(
     100.0 * SUM(CASE WHEN status = 'verde' THEN minutes ELSE 0 END)
-    / SUM(minutes)
+    / NULLIF(SUM(minutes), 0)
   , 2)                                                     AS sla_percent
 FROM durations
 GROUP BY autorizador, dia

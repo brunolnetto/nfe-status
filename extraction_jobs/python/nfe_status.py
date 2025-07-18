@@ -317,9 +317,12 @@ class NFEStatusMonitor:
             with self.get_db_connection() as conn:
                 cur = conn.cursor()
                 ts = datetime.fromisoformat(data.checked_at)
+                from_zone = ZoneInfo(NFE_TIMEZONE)
                 if ts.tzinfo is None:
-                    ts = ts.replace(tzinfo=timezone.utc)
-                ts_str = ts.astimezone(timezone.utc)
+                    ts = ts.replace(tzinfo=from_zone)
+                else:
+                    ts = ts.astimezone(from_zone)
+                ts_str = ts
                 success_count = 0
                 for row in data.statuses:
                     autorizador = row.get("autorizador")
